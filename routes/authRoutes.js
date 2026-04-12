@@ -3,11 +3,10 @@ const router = express.Router();
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
-const nodemailer = require('nodemailer');
 const { google } = require('googleapis');
 const User = require('../models/User');
 
-// --- GOOGLE OAUTH CONFIG ---
+// --- 1. GOOGLE API CONFIG (NO SMTP/NODEMAILER INVOLVED) ---
 const oauth2Client = new google.auth.OAuth2(
   process.env.GOOGLE_CLIENT_ID,
   process.env.GOOGLE_CLIENT_SECRET,
@@ -17,100 +16,164 @@ const oauth2Client = new google.auth.OAuth2(
 oauth2Client.setCredentials({ refresh_token: process.env.GOOGLE_REFRESH_TOKEN });
 
 const sendMailAPI = async (options) => {
-  const { token } = await oauth2Client.getAccessToken();
-  const transport = nodemailer.createTransport({
-    service: 'gmail',
-    auth: {
-      type: 'OAuth2',
-      user: process.env.EMAIL_USER,
-      clientId: process.env.GOOGLE_CLIENT_ID,
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-      refreshToken: process.env.GOOGLE_REFRESH_TOKEN,
-      accessToken: token,
+  const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
+  
+  // Construct the email manually to bypass SMTP entirely
+  const utf8Subject = `=?utf-8?B?${Buffer.from(options.subject).toString('base64')}?=`;
+  const messageParts = [
+    `From: "The Lantern Library" <${process.env.EMAIL_USER}>`,
+    `To: ${options.to}`,
+    'Content-Type: text/html; charset=utf-8',
+    'MIME-Version: 1.0',
+    `Subject: ${utf8Subject}`,
+    '',
+    options.html,
+  ];
+  
+  const message = messageParts.join('\n');
+  
+  // Google requires a specific Base64 encoded format
+  const encodedMessage = Buffer.from(message)
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+
+  // Send the email via HTTP POST (Render cannot block this)
+  return await gmail.users.messages.send({
+    userId: 'me',
+    requestBody: {
+      raw: encodedMessage,
     },
   });
-  return await transport.sendMail(options);
 };
 
-// --- ROUTES ---
-
+// --- 2. REGISTER ROUTE ---
 router.post('/register', async (req, res) => {
   try {
     const { username, email, password } = req.body;
     const existingUser = await User.findOne({ email });
-    if (existingUser) return res.status(400).json({ message: "Scholar already exists." });
+    if (existingUser) return res.status(400).json({ message: "A scholar with this email already exists." });
 
     const hashedPassword = await bcrypt.hash(password, 10);
     const token = crypto.randomBytes(32).toString('hex');
-    const newUser = new User({ username, email, password: hashedPassword, verificationToken: token, isVerified: false });
+    
+    const newUser = new User({ 
+      username, 
+      email, 
+      password: hashedPassword, 
+      verificationToken: token, 
+      isVerified: false 
+    });
     await newUser.save();
 
     const verifyLink = `${process.env.FRONTEND_URL}/verify/${token}`;
     await sendMailAPI({
-      from: process.env.EMAIL_USER,
       to: email,
-      subject: "Verify Your Archive Access",
-      html: `Click here: <a href="${verifyLink}">${verifyLink}</a>`
+      subject: "Welcome Scholar - Verify Your Archives",
+      html: `
+        <div style="background: #1a1a2e; color: #ecf0f1; padding: 30px; text-align: center; border: 1px solid #f39c12; border-radius: 10px;">
+          <h2 style="color: #f39c12;">Welcome to The Lantern Library</h2>
+          <p>We must verify your identity before granting access to the archives.</p>
+          <a href="${verifyLink}" style="display: inline-block; padding: 12px 25px; margin-top: 20px; background: #f39c12; color: #1a1a2e; text-decoration: none; font-weight: bold; border-radius: 5px;">Verify My Account</a>
+        </div>
+      `
     });
 
-    res.status(201).json({ message: "Verification sent!" });
+    res.status(201).json({ message: "Registration successful! Please check your email." });
   } catch (err) {
-    res.status(500).json({ message: "🚨 SYSTEM ERROR: " + err.message });
+    console.error("🚨 Register Error:", err);
+    res.status(500).json({ message: "🚨 BUG: " + (err.message || err) });
   }
 });
 
+// --- 3. FORGOT PASSWORD ROUTE ---
 router.post('/forgot-password', async (req, res) => {
   try {
     const user = await User.findOne({ email: req.body.email });
-    if (!user) return res.status(404).json({ message: "Email not found." });
+    if (!user) return res.status(404).json({ message: "If that email exists, a reset link has been sent." });
 
     const resetToken = crypto.randomBytes(32).toString('hex');
     user.resetPasswordToken = resetToken;
-    user.resetPasswordExpires = Date.now() + 3600000;
+    user.resetPasswordExpires = Date.now() + 3600000; // 1 hour
     await user.save();
 
     const resetLink = `${process.env.FRONTEND_URL}/reset-password/${resetToken}`;
     await sendMailAPI({
-      from: process.env.EMAIL_USER,
       to: user.email,
-      subject: "Library Password Reset",
-      html: `Reset here: <a href="${resetLink}">${resetLink}</a>`
+      subject: "Password Reset Request",
+      html: `
+        <div style="background: #1a1a2e; color: #ecf0f1; padding: 30px; text-align: center; border: 1px solid #f39c12; border-radius: 10px;">
+          <h2 style="color: #f39c12;">Reset Your Password</h2>
+          <p>You requested a password reset. Click the button below to set a new password. This link expires in 1 hour.</p>
+          <a href="${resetLink}" style="display: inline-block; padding: 12px 25px; margin-top: 20px; background: #f39c12; color: #1a1a2e; text-decoration: none; font-weight: bold; border-radius: 5px;">Reset Password</a>
+        </div>
+      `
     });
 
-    res.status(200).json({ message: "Reset link dispatched!" });
+    res.status(200).json({ message: "If that email exists, a reset link has been sent." });
   } catch (err) {
-    res.status(500).json({ message: "🚨 SYSTEM ERROR: " + err.message });
+    console.error("🚨 Forgot Password Error:", err);
+    res.status(500).json({ message: "🚨 BUG: " + (err.message || err) });
   }
 });
 
-// --- VERIFY, LOGIN, RESET ---
+// --- 4. VERIFY EMAIL ROUTE ---
 router.get('/verify/:token', async (req, res) => {
-  const user = await User.findOne({ verificationToken: req.params.token });
-  if (!user) return res.status(400).send("Invalid link");
-  user.isVerified = true;
-  user.verificationToken = undefined;
-  await user.save();
-  res.send("<h1>Verified! Return to the library and log in.</h1>");
-});
-
-router.post('/login', async (req, res) => {
-  const { email, password } = req.body;
-  const user = await User.findOne({ email });
-  if (!user || !user.isVerified || !(await bcrypt.compare(password, user.password))) {
-    return res.status(401).json({ message: "Invalid credentials or unverified email." });
+  try {
+    const user = await User.findOne({ verificationToken: req.params.token });
+    if (!user) return res.status(400).json({ message: "Invalid or expired link." });
+    
+    user.isVerified = true;
+    user.verificationToken = undefined;
+    await user.save();
+    
+    res.status(200).json({ message: "Account verified successfully! You may now log in." });
+  } catch (err) {
+    res.status(500).json({ message: "Verification failed." });
   }
-  const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: '7d' });
-  res.json({ token, user: { username: user.username, email: user.email } });
 });
 
+// --- 5. LOGIN ROUTE ---
+router.post('/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    const user = await User.findOne({ email });
+    
+    if (!user || !(await bcrypt.compare(password, user.password))) {
+      return res.status(400).json({ message: "Invalid credentials." });
+    }
+    
+    if (!user.isVerified) {
+      return res.status(403).json({ message: "Please verify your email before entering the archives." });
+    }
+
+    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: '7d' });
+    res.json({ token, user: { username: user.username, email: user.email } });
+  } catch (err) {
+    res.status(500).json({ message: "Login failed." });
+  }
+});
+
+// --- 6. RESET PASSWORD ROUTE ---
 router.post('/reset-password/:token', async (req, res) => {
-  const user = await User.findOne({ resetPasswordToken: req.params.token, resetPasswordExpires: { $gt: Date.now() } });
-  if (!user) return res.status(400).json({ message: "Link expired" });
-  user.password = await bcrypt.hash(req.body.password, 10);
-  user.resetPasswordToken = undefined;
-  user.resetPasswordExpires = undefined;
-  await user.save();
-  res.json({ message: "Password updated!" });
+  try {
+    const user = await User.findOne({ 
+      resetPasswordToken: req.params.token, 
+      resetPasswordExpires: { $gt: Date.now() } 
+    });
+
+    if (!user) return res.status(400).json({ message: "Link expired or invalid." });
+
+    user.password = await bcrypt.hash(req.body.password, 10);
+    user.resetPasswordToken = undefined;
+    user.resetPasswordExpires = undefined;
+    await user.save();
+
+    res.json({ message: "Password updated successfully!" });
+  } catch (err) {
+    res.status(500).json({ message: "Reset failed." });
+  }
 });
 
 module.exports = router;
