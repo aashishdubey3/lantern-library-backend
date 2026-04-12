@@ -15,41 +15,32 @@ const userSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true },
   password: { type: String, required: true },
   interests: { type: [String], default: [] },
-
-
   
-  // 🔥 NEW: Security & Verification
+  // Security & Verification
   isVerified: { type: Boolean, default: false },
   verificationToken: { type: String },
   resetPasswordToken: { type: String },
   resetPasswordExpires: { type: Date },
 
-  
-
   yearlyReadingGoal: { type: Number, default: 12 },
+  
+  // 🔥 CLEANED UP STREAK FIELDS (Now strictly using Dates)
   currentStreak: { type: Number, default: 0 },
-  lastActiveDate: { type: Date },
-
-  // Habit Tracking
-  currentStreak: { type: Number, default: 0 },
-  lastStreakDate: { type: String }, // The last day they hit their GOAL
-  lastActiveDate: { type: String }, // The last day they read ANYTHING
+  lastActiveDate: { type: Date }, 
+  lastStreakDate: { type: Date }, 
   articlesReadToday: { type: Number, default: 0 },
   dailyArticleGoal: { type: Number, default: 1 }, 
+
   followers: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
   following: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
   blockedUsers: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
   friends: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
   friendRequests: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
   isLibraryPublic: { type: Boolean, default: true }, 
-  
 
-  // 🔥 These arrays now use the mediaItemSchema instead of ObjectIds
   tbrList: [mediaItemSchema],
   currentlyConsuming: [mediaItemSchema],
   finishedList: [mediaItemSchema],
-
-  // The personal review notebook
   personalReviews: { type: Map, of: Object, default: {} }
   
 }, { timestamps: true });
