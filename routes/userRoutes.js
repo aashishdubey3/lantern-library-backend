@@ -77,6 +77,11 @@ router.get('/search', authMiddleware, async (req, res) => {
 // ➕ FOLLOW / UNFOLLOW A SCHOLAR
 router.post('/follow/:id', authMiddleware, async (req, res) => {
   try {
+    // 🔥 THE FIX: Prevent following yourself
+    if (req.user.id === req.params.id) {
+      return res.status(400).json({ message: "A scholar cannot follow their own shadow." });
+    }
+
     const currentUser = await User.findById(req.user.id);
     const targetUser = await User.findById(req.params.id);
 

@@ -18,12 +18,12 @@ const groupRoutes = require('./routes/groupRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
 
 const app = express();
-const server = http.createServer(app); // 🔥 Wrap Express in HTTP server
+const server = http.createServer(app);
 
-// 🔥 Initialize Socket.io
+// 🔥 UPGRADED: Socket.io with Bulletproof CORS
 const io = new Server(server, {
   cors: {
-    origin: process.env.FRONTEND_URL, 
+    origin: "*", // Allows Vercel to connect without trailing-slash errors
     methods: ["GET", "POST"]
   }
 });
@@ -44,16 +44,14 @@ app.use('/api/groups', groupRoutes);
 app.use('/api/notifications', notificationRoutes);
 
 // ==========================================
-// 📚 DATABASE CONNECTION (The IPv4 Fix)
+// 📚 DATABASE CONNECTION
 // ==========================================
 mongoose.connect(process.env.MONGO_URI, {
-  family: 4, // 🔥 THIS FORCES NODE.JS TO BYPASS THE MONGODB ATLAS IPv6 BUG
+  family: 4, 
 })
   .then(() => console.log('📚 Connected to The Lantern Library Database (IPv4 Forced)'))
   .catch((err) => console.log('Database connection error:', err));
 
-
-// Basic Test Route
 app.get('/', (req, res) => {
   res.send('The Lantern Library API is running...');
 });
@@ -62,21 +60,23 @@ app.get('/', (req, res) => {
 const onlineScholars = new Map();
 
 io.on('connection', (socket) => {
-  console.log('A scholar connected:', socket.id);
+  console.log('⚡ A socket connected:', socket.id);
 
-  // 1. When a user logs in, they silently register their ID with the server
+  // 1. Register User (Now handles proper _id)
   socket.on('register_scholar', (userId) => {
-    onlineScholars.set(userId, socket.id);
+    if (userId) {
+      onlineScholars.set(userId.toString(), socket.id);
+      console.log(`✅ Scholar Registered Online: ${userId}`);
+    }
   });
 
-  // 🔥 NEW: REAL-TIME ONLINE STATUS CHECK
+  // 2. Real-Time Online Status Check
   socket.on('check_online_status', (targetUserId) => {
-    const isOnline = onlineScholars.has(targetUserId);
-    // Send the true status back to the person who asked!
+    const isOnline = onlineScholars.has(targetUserId.toString());
     socket.emit('online_status_result', { userId: targetUserId, isOnline });
   });
 
-  // 2. Group Lounge (Community.jsx)
+  // 3. Group Lounge 
   socket.on('join_topic', (topicId) => {
     socket.join(topicId);
   });
@@ -84,50 +84,47 @@ io.on('connection', (socket) => {
     socket.to(data.topicId).emit('receive_reply', data.replyData);
   });
 
-  // 3. PRIVATE DIRECT MESSAGING
+  // 4. PRIVATE DIRECT MESSAGING
   socket.on('send_private_message', (data) => {
-    // data contains { receiverId, message }
-    const receiverSocketId = onlineScholars.get(data.receiverId);
+    const receiverSocketId = onlineScholars.get(data.receiverId.toString());
     
-    // If the person is currently online, send it straight to their screen!
     if (receiverSocketId) {
+      console.log(`📬 Routing private message to: ${data.receiverId}`);
       io.to(receiverSocketId).emit('receive_private_message', data.message);
+    } else {
+      console.log(`💤 Scholar ${data.receiverId} is offline. Message saved to DB only.`);
     }
   });
 
-  // 4. GROUP CHAT MESSAGING
+  // 5. GROUP CHAT MESSAGING
   socket.on('join_group_chat', (groupId) => {
-    socket.join(groupId); // Joins a specific group room
+    socket.join(groupId); 
   });
 
   socket.on('send_group_message', (data) => {
-    // data contains { groupId, message }
-    // Broadcasts to everyone in that specific group room EXCEPT the sender
     socket.to(data.groupId).emit('receive_group_message', data.message);
   });
 
-  // 5. LIVE NOTIFICATION PING
+  // 6. LIVE NOTIFICATION PING
   socket.on('send_notification_ping', (data) => {
-    // data contains { targetUserId, alertMessage }
-    const targetSocketId = onlineScholars.get(data.targetUserId);
+    const targetSocketId = onlineScholars.get(data.targetUserId.toString());
     if (targetSocketId) {
       io.to(targetSocketId).emit('receive_notification_ping', data);
     }
   });
 
-  // 6. When they close the browser
+  // 7. Disconnect logic
   socket.on('disconnect', () => {
-    // Find and remove them from the online list
     for (let [userId, socketId] of onlineScholars.entries()) {
       if (socketId === socket.id) {
         onlineScholars.delete(userId);
+        console.log(`❌ Scholar went offline: ${userId}`);
         break;
       }
     }
   });
 });
 
-// 🔥 IMPORTANT: Use server.listen instead of app.listen!
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
   console.log(`Server & Live Sockets are glowing on port ${PORT}`);
