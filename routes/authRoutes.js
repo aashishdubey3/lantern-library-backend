@@ -6,7 +6,7 @@ const crypto = require('crypto');
 const { google } = require('googleapis');
 const User = require('../models/User');
 
-// --- 1. GOOGLE API CONFIG (NO SMTP/NODEMAILER INVOLVED) ---
+// --- 1. GOOGLE API CONFIG (HTTP METHOD, NO SMTP) ---
 const oauth2Client = new google.auth.OAuth2(
   process.env.GOOGLE_CLIENT_ID,
   process.env.GOOGLE_CLIENT_SECRET,
@@ -18,7 +18,6 @@ oauth2Client.setCredentials({ refresh_token: process.env.GOOGLE_REFRESH_TOKEN })
 const sendMailAPI = async (options) => {
   const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
   
-  // Construct the email manually to bypass SMTP entirely
   const utf8Subject = `=?utf-8?B?${Buffer.from(options.subject).toString('base64')}?=`;
   const messageParts = [
     `From: "The Lantern Library" <${process.env.EMAIL_USER}>`,
@@ -31,20 +30,15 @@ const sendMailAPI = async (options) => {
   ];
   
   const message = messageParts.join('\n');
-  
-  // Google requires a specific Base64 encoded format
   const encodedMessage = Buffer.from(message)
     .toString('base64')
     .replace(/\+/g, '-')
     .replace(/\//g, '_')
     .replace(/=+$/, '');
 
-  // Send the email via HTTP POST (Render cannot block this)
   return await gmail.users.messages.send({
     userId: 'me',
-    requestBody: {
-      raw: encodedMessage,
-    },
+    requestBody: { raw: encodedMessage },
   });
 };
 
@@ -149,7 +143,11 @@ router.post('/login', async (req, res) => {
     }
 
     const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: '7d' });
-    res.json({ token, user: { username: user.username, email: user.email } });
+    
+    const userObject = user.toObject();
+    delete userObject.password;
+    
+    res.json({ token, user: userObject });
   } catch (err) {
     res.status(500).json({ message: "Login failed." });
   }
@@ -173,6 +171,39 @@ router.post('/reset-password/:token', async (req, res) => {
     res.json({ message: "Password updated successfully!" });
   } catch (err) {
     res.status(500).json({ message: "Reset failed." });
+  }
+});
+
+// --- 7. RESEND VERIFICATION EMAIL ROUTE ---
+router.post('/resend-verification', async (req, res) => {
+  try {
+    const { email } = req.body;
+    const user = await User.findOne({ email });
+
+    if (!user) return res.status(404).json({ message: "No scholar found with that email." });
+    if (user.isVerified) return res.status(400).json({ message: "Account already verified! Please log in." });
+
+    const newToken = crypto.randomBytes(32).toString('hex');
+    user.verificationToken = newToken;
+    await user.save();
+
+    const verifyLink = `${process.env.FRONTEND_URL}/verify/${newToken}`;
+    await sendMailAPI({
+      to: user.email,
+      subject: "Resend: Verify Your Archives",
+      html: `
+        <div style="background: #1a1a2e; color: #ecf0f1; padding: 30px; text-align: center; border: 1px solid #f39c12; border-radius: 10px;">
+          <h2 style="color: #f39c12;">Welcome back to The Lantern Library</h2>
+          <p>You requested a new verification link. Click below to unlock the archives.</p>
+          <a href="${verifyLink}" style="display: inline-block; padding: 12px 25px; margin-top: 20px; background: #f39c12; color: #1a1a2e; text-decoration: none; font-weight: bold; border-radius: 5px;">Verify My Account</a>
+        </div>
+      `
+    });
+
+    res.status(200).json({ message: "A new verification link has been sent to your email!" });
+  } catch (err) {
+    console.error("🚨 Resend Verification Error:", err);
+    res.status(500).json({ message: "🚨 BUG: " + (err.message || err) });
   }
 });
 
