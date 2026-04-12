@@ -7,7 +7,7 @@ const nodemailer = require('nodemailer');
 const { google } = require('googleapis');
 const User = require('../models/User');
 
-// 1. Setup OAuth2 Client
+// --- GOOGLE OAUTH CONFIG ---
 const oauth2Client = new google.auth.OAuth2(
   process.env.GOOGLE_CLIENT_ID,
   process.env.GOOGLE_CLIENT_SECRET,
@@ -16,59 +16,49 @@ const oauth2Client = new google.auth.OAuth2(
 
 oauth2Client.setCredentials({ refresh_token: process.env.GOOGLE_REFRESH_TOKEN });
 
-// 2. Transporter Generator (API Method)
-const createTransporter = async () => {
-  try {
-    const { token } = await oauth2Client.getAccessToken();
-    return nodemailer.createTransport({
-      host: "smtp.gmail.com",
-      port: 465,
-      secure: true,
-      auth: {
-        type: "OAuth2",
-        user: process.env.EMAIL_USER,
-        clientId: process.env.GOOGLE_CLIENT_ID,
-        clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-        refreshToken: process.env.GOOGLE_REFRESH_TOKEN,
-        accessToken: token,
-      },
-    });
-  } catch (err) {
-    throw new Error("OAuth Token Generation Failed: " + err.message);
-  }
+const sendMailAPI = async (options) => {
+  const { token } = await oauth2Client.getAccessToken();
+  const transport = nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+      type: 'OAuth2',
+      user: process.env.EMAIL_USER,
+      clientId: process.env.GOOGLE_CLIENT_ID,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+      refreshToken: process.env.GOOGLE_REFRESH_TOKEN,
+      accessToken: token,
+    },
+  });
+  return await transport.sendMail(options);
 };
 
-// 3. REGISTER
+// --- ROUTES ---
+
 router.post('/register', async (req, res) => {
   try {
     const { username, email, password } = req.body;
     const existingUser = await User.findOne({ email });
-    if (existingUser) return res.status(400).json({ message: "User exists." });
+    if (existingUser) return res.status(400).json({ message: "Scholar already exists." });
 
     const hashedPassword = await bcrypt.hash(password, 10);
-    const verificationToken = crypto.randomBytes(32).toString('hex');
-    const newUser = new User({ username, email, password: hashedPassword, verificationToken, isVerified: false });
+    const token = crypto.randomBytes(32).toString('hex');
+    const newUser = new User({ username, email, password: hashedPassword, verificationToken: token, isVerified: false });
     await newUser.save();
 
-    const transporter = await createTransporter();
-    const verifyLink = `${process.env.FRONTEND_URL}/verify/${verificationToken}`;
-    
-    await transporter.sendMail({
-      from: `"The Lantern Library" <${process.env.EMAIL_USER}>`,
-      to: newUser.email,
-      subject: "Verify Your Account",
-      html: `<div style="background:#1a1a2e; color:#fff; padding:20px; text-align:center;">
-               <h2>Welcome Scholar</h2>
-               <a href="${verifyLink}" style="background:#f39c12; padding:10px; color:#1a1a2e; text-decoration:none;">Verify Account</a>
-             </div>`
+    const verifyLink = `${process.env.FRONTEND_URL}/verify/${token}`;
+    await sendMailAPI({
+      from: process.env.EMAIL_USER,
+      to: email,
+      subject: "Verify Your Archive Access",
+      html: `Click here: <a href="${verifyLink}">${verifyLink}</a>`
     });
-    res.status(201).json({ message: "Check your email!" });
-  } catch (error) {
-    res.status(500).json({ message: "🚨 BUG: " + error.message });
+
+    res.status(201).json({ message: "Verification sent!" });
+  } catch (err) {
+    res.status(500).json({ message: "🚨 SYSTEM ERROR: " + err.message });
   }
 });
 
-// 4. FORGOT PASSWORD
 router.post('/forgot-password', async (req, res) => {
   try {
     const user = await User.findOne({ email: req.body.email });
@@ -79,57 +69,48 @@ router.post('/forgot-password', async (req, res) => {
     user.resetPasswordExpires = Date.now() + 3600000;
     await user.save();
 
-    const transporter = await createTransporter();
     const resetLink = `${process.env.FRONTEND_URL}/reset-password/${resetToken}`;
-
-    await transporter.sendMail({
-      from: `"The Lantern Library" <${process.env.EMAIL_USER}>`,
+    await sendMailAPI({
+      from: process.env.EMAIL_USER,
       to: user.email,
-      subject: "Password Reset",
-      html: `<a href="${resetLink}">Reset Password</a>`
+      subject: "Library Password Reset",
+      html: `Reset here: <a href="${resetLink}">${resetLink}</a>`
     });
-    res.status(200).json({ message: "Reset link sent!" });
-  } catch (error) {
-    res.status(500).json({ message: "🚨 BUG: " + error.message });
+
+    res.status(200).json({ message: "Reset link dispatched!" });
+  } catch (err) {
+    res.status(500).json({ message: "🚨 SYSTEM ERROR: " + err.message });
   }
 });
 
-// 5. VERIFY EMAIL
+// --- VERIFY, LOGIN, RESET ---
 router.get('/verify/:token', async (req, res) => {
-  try {
-    const user = await User.findOne({ verificationToken: req.params.token });
-    if (!user) return res.status(400).send("Invalid Token");
-    user.isVerified = true;
-    user.verificationToken = undefined;
-    await user.save();
-    res.send("<h1>Verified! You can now log in.</h1>");
-  } catch (err) { res.status(500).send("Verification Error"); }
+  const user = await User.findOne({ verificationToken: req.params.token });
+  if (!user) return res.status(400).send("Invalid link");
+  user.isVerified = true;
+  user.verificationToken = undefined;
+  await user.save();
+  res.send("<h1>Verified! Return to the library and log in.</h1>");
 });
 
-// 6. LOGIN
 router.post('/login', async (req, res) => {
-  try {
-    const { email, password } = req.body;
-    const user = await User.findOne({ email });
-    if (!user || !user.isVerified || !(await bcrypt.compare(password, user.password))) {
-      return res.status(401).json({ message: "Invalid or Unverified" });
-    }
-    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: '7d' });
-    res.json({ token, user: { username: user.username, email: user.email } });
-  } catch (err) { res.status(500).send("Login Error"); }
+  const { email, password } = req.body;
+  const user = await User.findOne({ email });
+  if (!user || !user.isVerified || !(await bcrypt.compare(password, user.password))) {
+    return res.status(401).json({ message: "Invalid credentials or unverified email." });
+  }
+  const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: '7d' });
+  res.json({ token, user: { username: user.username, email: user.email } });
 });
 
-// 7. RESET PASSWORD
 router.post('/reset-password/:token', async (req, res) => {
-  try {
-    const user = await User.findOne({ resetPasswordToken: req.params.token, resetPasswordExpires: { $gt: Date.now() } });
-    if (!user) return res.status(400).json({ message: "Expired link" });
-    user.password = await bcrypt.hash(req.body.password, 10);
-    user.resetPasswordToken = undefined;
-    user.resetPasswordExpires = undefined;
-    await user.save();
-    res.json({ message: "Success!" });
-  } catch (err) { res.status(500).send("Reset Error"); }
+  const user = await User.findOne({ resetPasswordToken: req.params.token, resetPasswordExpires: { $gt: Date.now() } });
+  if (!user) return res.status(400).json({ message: "Link expired" });
+  user.password = await bcrypt.hash(req.body.password, 10);
+  user.resetPasswordToken = undefined;
+  user.resetPasswordExpires = undefined;
+  await user.save();
+  res.json({ message: "Password updated!" });
 });
 
 module.exports = router;
