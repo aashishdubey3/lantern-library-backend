@@ -7,7 +7,7 @@ const Notification = require('../models/Notification');
 const GroupChat = require('../models/GroupChat');
 const authMiddleware = require('../middleware/auth');
 
-// 👤 GET CURRENT USER PROFILE (🔥 WITH NEW STREAK LOGIC)
+// 👤 GET CURRENT USER PROFILE
 router.get('/profile', authMiddleware, async (req, res) => {
   try {
     const user = await User.findById(req.user.id).select('-password');
@@ -15,13 +15,11 @@ router.get('/profile', authMiddleware, async (req, res) => {
 
     // --- 📅 STREAK CALCULATION ENGINE ---
     const now = new Date();
-    // Normalize to midnight so logging in at 11PM and 1AM next day counts correctly
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     
     let saveRequired = false;
 
     if (!user.lastActiveDate) {
-      // First time ever logging in! Set streak to 1.
       user.currentStreak = 1;
       user.lastActiveDate = today;
       saveRequired = true;
@@ -29,27 +27,21 @@ router.get('/profile', authMiddleware, async (req, res) => {
       const lastActive = new Date(user.lastActiveDate);
       const lastActiveNormalized = new Date(lastActive.getFullYear(), lastActive.getMonth(), lastActive.getDate());
       
-      // Calculate how many days have passed
       const diffTime = Math.abs(today - lastActiveNormalized);
       const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
 
       if (diffDays === 1) {
-        // Exactly one day has passed: Keep the streak alive!
         user.currentStreak += 1;
         user.lastActiveDate = today;
         saveRequired = true;
       } else if (diffDays > 1) {
-        // They missed a day: Streak is broken, reset to 1.
         user.currentStreak = 1;
         user.lastActiveDate = today;
         saveRequired = true;
       }
-      // Note: If diffDays === 0, they already logged in today, so we do nothing.
     }
 
-    if (saveRequired) {
-      await user.save();
-    }
+    if (saveRequired) await user.save();
     // ------------------------------------
 
     res.status(200).json(user);
@@ -113,9 +105,7 @@ router.get('/search', authMiddleware, async (req, res) => {
 // ➕ FOLLOW / UNFOLLOW A SCHOLAR
 router.post('/follow/:id', authMiddleware, async (req, res) => {
   try {
-    if (req.user.id === req.params.id) {
-      return res.status(400).json({ message: "A scholar cannot follow their own shadow." });
-    }
+    if (req.user.id === req.params.id) return res.status(400).json({ message: "A scholar cannot follow their own shadow." });
 
     const currentUser = await User.findById(req.user.id);
     const targetUser = await User.findById(req.params.id);
@@ -145,9 +135,7 @@ router.post('/follow/:id', authMiddleware, async (req, res) => {
 // 🤝 SEND FRIEND REQUEST
 router.post('/friend-request/:id', authMiddleware, async (req, res) => {
   try {
-    if (req.user.id === req.params.id) {
-      return res.status(400).json({ message: "You cannot befriend yourself in the archives." });
-    }
+    if (req.user.id === req.params.id) return res.status(400).json({ message: "You cannot befriend yourself in the archives." });
 
     const currentUser = await User.findById(req.user.id);
     const targetUser = await User.findById(req.params.id);
@@ -248,11 +236,43 @@ router.post('/block/:id', authMiddleware, async (req, res) => {
   }
 });
 
+
+// ==========================================
+// 📖 LOG READING SESSION (Proof of Work)
+// ==========================================
+router.post('/log-read', authMiddleware, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ message: "Scholar not found." });
+
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+    // If this is their first read of the new day, reset the daily count to 0 first
+    if (!user.lastActiveDate || user.lastActiveDate < today) {
+       user.articlesReadToday = 0;
+       user.lastActiveDate = today;
+    }
+
+    // Add +1 to their daily reading count!
+    user.articlesReadToday += 1;
+    await user.save();
+
+    res.status(200).json({ 
+      message: "Session logged! The archives have noted your diligence.",
+      articlesReadToday: user.articlesReadToday,
+      dailyGoal: user.dailyArticleGoal
+    });
+  } catch (err) {
+    console.error("Log Read Error:", err);
+    res.status(500).json({ message: "Failed to log reading session." });
+  }
+});
+
+
 // ==========================================
 // 📚 MEDIA LIST MANAGEMENT
 // ==========================================
-
-// ➕ ADD ITEM TO LIBRARY
 router.post('/add-item', authMiddleware, async (req, res) => {
   try {
     const { title, mediaType, coverImage, listType } = req.body;
@@ -260,31 +280,19 @@ router.post('/add-item', authMiddleware, async (req, res) => {
     const user = await User.findById(req.user.id);
     if (!user) return res.status(404).json({ message: "Scholar not found in the archives." });
 
-    const newItem = {
-      title,
-      mediaType,
-      coverImage: coverImage || 'https://placehold.co/150x220/2c3e50/ecf0f1?text=No+Cover',
-      addedAt: new Date()
-    };
+    const newItem = { title, mediaType, coverImage: coverImage || 'https://placehold.co/150x220/2c3e50/ecf0f1?text=No+Cover', addedAt: new Date() };
 
-    if (listType === 'currentlyConsuming') {
-      user.currentlyConsuming.push(newItem);
-    } else if (listType === 'finishedList') {
-      user.finishedList.push(newItem);
-    } else {
-      user.tbrList.push(newItem);
-    }
+    if (listType === 'currentlyConsuming') user.currentlyConsuming.push(newItem);
+    else if (listType === 'finishedList') user.finishedList.push(newItem);
+    else user.tbrList.push(newItem);
 
     await user.save();
     res.status(200).json({ message: "Successfully added to archives!", user });
-
   } catch (error) {
-    console.error("🔥 ADD ITEM CRASH:", error);
     res.status(500).json({ message: "Server error while adding item." });
   }
 });
 
-// 🚚 MOVE ITEM
 router.post('/move-item', authMiddleware, async (req, res) => {
   try {
     const { mediaId, currentList, targetList } = req.body;
@@ -294,7 +302,6 @@ router.post('/move-item', authMiddleware, async (req, res) => {
     if (itemIndex === -1) return res.status(404).json({ message: 'Item not found in current list.' });
 
     const [itemToMove] = user[currentList].splice(itemIndex, 1);
-
     user[targetList].push(itemToMove);
     await user.save();
 
@@ -304,33 +311,27 @@ router.post('/move-item', authMiddleware, async (req, res) => {
   }
 });
 
-// ⭐ ADD REVIEW
 router.post('/add-review', authMiddleware, async (req, res) => {
   try {
     const { mediaId, rating, reviewText } = req.body;
     const user = await User.findById(req.user.id);
 
     if (!user) return res.status(404).json({ message: 'User not found' });
-
     if (!user.personalReviews || !(user.personalReviews instanceof Map)) {
       user.personalReviews = new Map(Object.entries(user.personalReviews || {}));
     }
 
     user.personalReviews.set(mediaId.toString(), { rating, reviewText, date: new Date() });
-    
     await user.save();
     res.status(200).json(user);
   } catch (error) {
-    console.error("Review Save Error:", error);
     res.status(500).json({ message: 'Error adding review' });
   }
 });
 
-// 🚨 PERMANENTLY DELETE ACCOUNT & ALL DATA
 router.delete('/delete', authMiddleware, async (req, res) => {
   try {
     const userId = req.user.id;
-
     await Article.deleteMany({ authorId: userId });
     await Message.deleteMany({ $or: [{ senderId: userId }, { receiverId: userId }] });
     await Notification.deleteMany({ $or: [{ recipientId: userId }, { senderId: userId }] });
@@ -339,7 +340,6 @@ router.delete('/delete', authMiddleware, async (req, res) => {
 
     res.status(200).json({ message: "Scholar erased from the archives." });
   } catch (err) {
-    console.error("Deletion Error:", err);
     res.status(500).json({ message: "Failed to delete account." });
   }
 });
