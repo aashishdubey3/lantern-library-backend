@@ -16,6 +16,7 @@ const discussionRoutes = require('./routes/discussionRoutes');
 const messageRoutes = require('./routes/messageRoutes');
 const groupRoutes = require('./routes/groupRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
+const journalRoutes = require('./routes/journalRoutes'); // 🔥 NEW
 
 const app = express();
 const server = http.createServer(app);
@@ -23,7 +24,7 @@ const server = http.createServer(app);
 // 🔥 UPGRADED: Socket.io with Bulletproof CORS
 const io = new Server(server, {
   cors: {
-    origin: "*", // Allows Vercel to connect without trailing-slash errors
+    origin: "*", 
     methods: ["GET", "POST"]
   }
 });
@@ -34,7 +35,7 @@ const io = new Server(server, {
 app.use(cors({
   origin: "*", 
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"] // Explicitly allows your Bearer token!
+  allowedHeaders: ["Content-Type", "Authorization"] 
 }));
 
 app.use(express.json({ limit: '50mb' }));
@@ -51,6 +52,8 @@ app.use('/api/discussions', discussionRoutes);
 app.use('/api/messages', messageRoutes);
 app.use('/api/groups', groupRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/journals', journalRoutes); // 🔥 NEW
+
 
 // ==========================================
 // 📚 DATABASE CONNECTION
@@ -71,7 +74,6 @@ const onlineScholars = new Map();
 io.on('connection', (socket) => {
   console.log('⚡ A socket connected:', socket.id);
 
-  // 1. Register User (Now handles proper _id)
   socket.on('register_scholar', (userId) => {
     if (userId) {
       onlineScholars.set(userId.toString(), socket.id);
@@ -79,13 +81,11 @@ io.on('connection', (socket) => {
     }
   });
 
-  // 2. Real-Time Online Status Check
   socket.on('check_online_status', (targetUserId) => {
     const isOnline = onlineScholars.has(targetUserId.toString());
     socket.emit('online_status_result', { userId: targetUserId, isOnline });
   });
 
-  // 3. Group Lounge 
   socket.on('join_topic', (topicId) => {
     socket.join(topicId);
   });
@@ -93,19 +93,13 @@ io.on('connection', (socket) => {
     socket.to(data.topicId).emit('receive_reply', data.replyData);
   });
 
-  // 4. PRIVATE DIRECT MESSAGING
   socket.on('send_private_message', (data) => {
     const receiverSocketId = onlineScholars.get(data.receiverId.toString());
-    
     if (receiverSocketId) {
-      console.log(`📬 Routing private message to: ${data.receiverId}`);
       io.to(receiverSocketId).emit('receive_private_message', data.message);
-    } else {
-      console.log(`💤 Scholar ${data.receiverId} is offline. Message saved to DB only.`);
     }
   });
 
-  // 5. GROUP CHAT MESSAGING
   socket.on('join_group_chat', (groupId) => {
     socket.join(groupId); 
   });
@@ -114,7 +108,6 @@ io.on('connection', (socket) => {
     socket.to(data.groupId).emit('receive_group_message', data.message);
   });
 
-  // 6. LIVE NOTIFICATION PING
   socket.on('send_notification_ping', (data) => {
     const targetSocketId = onlineScholars.get(data.targetUserId.toString());
     if (targetSocketId) {
@@ -122,7 +115,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  // 7. Disconnect logic
   socket.on('disconnect', () => {
     for (let [userId, socketId] of onlineScholars.entries()) {
       if (socketId === socket.id) {
