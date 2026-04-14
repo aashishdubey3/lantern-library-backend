@@ -28,6 +28,9 @@ router.post('/', authMiddleware, async (req, res) => {
       desk.pages = pages;
       desk.theme = theme;
       desk.lastUpdated = Date.now();
+      
+      // 🔥 THE CRITICAL MONGODB FIX: Forces the DB to save the new X/Y array coordinates!
+      desk.markModified('pages'); 
     }
     
     await desk.save();
