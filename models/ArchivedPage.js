@@ -4,7 +4,8 @@ const ArchivedPageSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   title: { type: String, required: true },
   theme: { type: String, default: 'parchment' },
-  items: { type: Array, default: [] }, // The layout of all the stickers, notes, and photos
+  pages: { type: Array, default: [] }, // 🔥 THIS MUST BE HERE OR PAGES ARE DELETED!
+  items: { type: Array, default: [] }, // Failsafe for older saves
   createdAt: { type: Date, default: Date.now }
 });
 
