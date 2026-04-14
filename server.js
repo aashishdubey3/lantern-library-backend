@@ -28,9 +28,18 @@ const io = new Server(server, {
   }
 });
 
-// Middleware
-app.use(cors());
-app.use(express.json());
+// ==========================================
+// 🔥 BULLETPROOF API CORS & PAYLOAD LIMITS
+// ==========================================
+app.use(cors({
+  origin: "*", 
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"] // Explicitly allows your Bearer token!
+}));
+
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
+
 
 // Apply Routes
 app.use('/api/auth', authRoutes);
